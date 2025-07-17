@@ -15,19 +15,27 @@ class ChatInterface extends Component
 {
     use WithFileUploads;
 
+    // User's current message input
     public $message = '';
+    // Currently selected chat session ID
     public $sessionId;
+    // All chat sessions for the user
     public $sessions;
+    // Uploaded file (if any)
     public $file;
+    // AI's response to display
     public $aiResponse = '';
+    // Loading state for UI feedback
     public $isLoading = false;
 
+    // Initialize sessions and set default session
     public function mount()
     {
         $this->sessions = ChatSession::where('user_id', Auth::id())->latest()->get();
         $this->sessionId = $this->sessions->first()?->id ?? $this->createNewSession();
     }
 
+    // Create a new chat session for the user
     public function createNewSession()
     {
         $session = ChatSession::create([
@@ -35,9 +43,13 @@ class ChatInterface extends Component
             'title' => 'New Session ' . now()->format('Y-m-d H:i:s'),
         ]);
         $this->sessions = ChatSession::where('user_id', Auth::id())->latest()->get();
+
+        $this->switchSession($session->id);
+
         return $session->id;
     }
 
+    // Switch to a different chat session
     public function switchSession($sessionId)
     {
         $this->sessionId = $sessionId;
@@ -45,13 +57,15 @@ class ChatInterface extends Component
         $this->isLoading = false;
     }
 
+    // Handle sending a message or uploading a file
     public function sendMessage()
     {
+        // Prevent empty submissions
         if (trim($this->message) === '' && !$this->file) {
             return;
         }
 
-        // Save user message
+        // Save user message if present
         if (trim($this->message) !== '') {
             ChatMessage::create([
                 'session_id' => $this->sessionId,
@@ -60,7 +74,7 @@ class ChatInterface extends Component
             ]);
         }
 
-        // Handle file upload
+        // Handle file upload and create attachment record
         $fileSummary = null;
         if ($this->file) {
             $this->validate([
@@ -81,7 +95,7 @@ class ChatInterface extends Component
             ]);
         }
 
-        // Detect incident ID
+        // Detect incident ID in the message (e.g., INC1234567)
         $incidentId = null;
         if ($this->message && preg_match('/INC-?\d{6,7}\b/', $this->message, $matches)) {
             $incidentId = $matches[0];
@@ -93,10 +107,10 @@ class ChatInterface extends Component
             }
         }
 
-        // Mock SIEM data
+        // Mock SIEM data for the incident (for demo/testing)
         $siemData = $incidentId ? $this->mockSiemQuery($incidentId) : null;
 
-        // Build prompt
+        // Build prompt for AI model
         $prompt = "You are a SOC assistant. Provide concise, accurate, security-focused responses.\n";
         if ($this->message) {
             $prompt .= "User message: " . $this->message . "\n";
@@ -108,7 +122,7 @@ class ChatInterface extends Component
             $prompt .= "File Summary: " . $fileSummary . "\n";
         }
 
-        // Send to Ollama and stream response
+        // Send prompt to Ollama API and stream the response
         $this->isLoading = true;
         $this->dispatch('start-loading');
         try {
@@ -124,10 +138,12 @@ class ChatInterface extends Component
             $this->dispatch('stop-loading');
         }
 
+        // Reset input fields
         $this->message = '';
         $this->file = null;
     }
 
+    // Generate mock SIEM data for a given incident ID
     protected function mockSiemQuery($incidentId)
     {
         return [
@@ -139,19 +155,23 @@ class ChatInterface extends Component
         ];
     }
 
+    // Generate a mock summary for an uploaded file
     protected function mockFileSummary($fileType, $fileName)
     {
         return "Mock summary for $fileType file '$fileName': Contains threat intelligence data.";
     }
 
+    // Stream the AI response from Ollama API and update the chat in real time
     protected function streamOllamaResponse($prompt)
     {
+        // Create a placeholder message for the AI response
         $messageId = ChatMessage::create([
             'session_id' => $this->sessionId,
             'role' => 'ai',
             'message' => '',
         ])->id;
 
+        // Send prompt to Ollama API (streaming)
         $response = Http::withOptions(['stream' => true])
             ->timeout(60)
             ->post(config('services.ollama.url') . '/api/generate', [
@@ -199,8 +219,10 @@ class ChatInterface extends Component
         $this->dispatch('message-updated');
     }
 
+    // Render the chat interface view with messages and attachments
     public function render()
     {
+        // Fetch all messages for the current session
         $messages = ChatMessage::where('session_id', $this->sessionId)
             ->select('id', 'session_id', 'role', 'message', 'created_at')
             ->get()
@@ -214,6 +236,7 @@ class ChatInterface extends Component
                 ];
             });
 
+        // Fetch all attachments for the current session
         $attachments = ChatAttachment::where('session_id', $this->sessionId)
             ->select('id', 'session_id', 'original_name', 'file_type', 'summary', 'created_at')
             ->get()
@@ -228,8 +251,10 @@ class ChatInterface extends Component
                 ];
             });
 
+        // Merge and sort messages and attachments by creation time
         $items = $messages->merge($attachments)->sortBy('created_at');
 
+        // Pass data to the Livewire view
         return view('livewire.chat-interface', [
             'items' => $items,
             'sessions' => $this->sessions,
